@@ -1,0 +1,234 @@
+---
+output: html_document
+---
+#Introduction
+
+Traditionally, human activity recognition research (HAR) has focused on discriminating between different activities. The
+current analysis is based on a dataset which has been constructed with the purpose to investigate "how (well)" a weight lifting exercise was performed by the wearer.
+
+As explained in the documentation to the dataset, 6 young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes. 
+
+#Initial data analysis 
+
+Both the training and the test data have been obtained directly from the course website. 
+
+```{r, echo=FALSE , warning=FALSE, message=FALSE}
+library(knitr)
+library(caret)
+setwd("D:\\coursera\\practicalmachinelearn\\courseproject")
+set.seed(123)
+
+downloadfiles <- FALSE
+
+if(downloadfiles == TRUE){
+  url_train <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+  download.file(url_train, destfile = "train.csv")
+  
+  url_test <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+  download.file(url_test, destfile = "test.csv")
+}
+
+
+train <- read.csv("train.csv")
+test <- read.csv("test.csv")
+```
+
+The  variable *`r  names(train)[!(names(train) %in% names(test))] `* is included in the training data set but not in the test data set, while  variable *`r  names(test)[!(names(test) %in% names(train))] `* is included in the test data set but not in the training data set:
+
+
+As shown below, the training datatset is distributed more or less proportionally over the five Classes - there are thus no issues of class unbalance.
+
+```{r, echo=FALSE , warning=FALSE, message=FALSE}
+#no issue of unbalanced classes
+summary(train$classe)
+```
+
+
+
+```{r, echo=FALSE , warning=FALSE, message=FALSE}
+#eliminate variables with litlle or now variation
+nsv <- nearZeroVar(train)
+#length(nsv)
+train <- train[  , -nsv]
+test <- test[  , -nsv]
+```
+
+However, it turns out that there are `r length(nsv) ` variables with near zero variance in the training data set. These variables are eliminated from both the training and the test dataset. 
+
+
+```{r, echo=FALSE , warning=FALSE, message=FALSE}
+#elminate all variables where more than 96% of values are NA
+na_count <- apply(train, 2, function(x) sum(is.na(x)))
+na_count_prop <- apply(train, 2, function(x) sum(is.na(x))/length(x))
+na_count_prop_low <- na_count_prop[ na_count_prop < 0.96]
+
+train <- train[  , names(na_count_prop_low)]
+train <- train[  , setdiff(names(train),c("X", "user_name", "raw_timestamp_part_1"  , 
+                                          "raw_timestamp_part_2", "cvtd_timestamp",	"num_window"))]
+
+test <- test[  , union(setdiff(names(train), "classe"),"problem_id")]
+
+#to do: verify this
+#test <- test[  , setdiff(names(test),c("x", "user_name"))]
+
+#nrow(train[complete.cases(train),])
+```
+
+Moreover, for `r length(na_count_prop_low) ` variables, the number of NA observations exceeds 96%. These variables have also been eliminated from the test and the train data set. After this correction, all NA values have been eliminated from the data.
+
+Several variables ("X", "user_name", "raw_timestamp_part_1"  , 
+"raw_timestamp_part_2", "cvtd_timestamp",  "num_window") identify the observation, but do not describe the physical activity linked to the actual weight lifting exercise. These have also been eliminated from both data sets.
+
+The actual estimations are thus based on the observation of 
+`r ncol(train) ` explanatory variables. 
+
+#Estimates
+
+As the dependent variable is categorical, the use of linear regression is not appropriate for this model. Moreover, as the number of categories exceeds two, the use of a binary logit model can also be excluded. 
+
+We have considered using linear discrimant analysis, with as result:
+
+```{r, echo=FALSE , warning=FALSE, message=FALSE}
+#lda leads to very low accuracy 
+# preProcPCA <- preProcess(train[  , - ncol(train)],method="pca", thresh = 0.95 )
+# trainPC <- predict(preProcPCA,train[  , - ncol(train)])
+# modelPCAGLM <- train(train$classe ~ .,method="lda",data=trainPC)
+# predPCAGLM <- predict(modelPCAGLM,test)
+modellda <- train(train$classe ~ .,method="lda",data=train)
+modellda
+```
+
+resulting in an accuracy of `r round(modellda$results$Accuracy,3)`. While this is not a bad result, its performance is much lower than that of three alternatives that are described below, and it will not be discussed further. 
+
+We have then run a random forest with the default parameters from  the "caret" package.
+
+```{r, echo=FALSE , warning=FALSE, message=FALSE}
+rffirstrun <- FALSE
+
+if(rffirstrun == TRUE){
+  ctrl <- trainControl(method = "repeatedcv", number = "10", repeats = "10")
+  
+  modFitRF <- train(classe  ~ .  , data = train, method="rf",
+                    preProcess=c("center","scale")
+                    )
+  save(modFitRF, file = "modFitRF.RData")  
+} else {
+  load("modFitRF.RData")
+}
+```
+
+The model has been bootstrapped for the purpose of cross validation with `r modFitRF$control$number  ` resamples. 
+
+`r nrow(modFitRF$results)` models have been evaluated. In the preferred model, `r round(modFitRF$results[modFitRF$results$mtry == modFitRF$bestTune$mtry,"mtry"], 3)` features are selected randomly at each split. This leads to an accuracy of `r round(modFitRF$results[modFitRF$results$mtry == modFitRF$bestTune$mtry,"Accuracy"], 3)`, which, due to the use of the bootstrap, is an unbiased estimator of the out-of-sample error.
+
+```{r, echo=FALSE , warning=FALSE, message=FALSE}
+modFitRF
+```
+
+
+The final model results in a tree with `r nrow(randomForest::getTree(modFitRF$finalModel, k=1)) ` levels, of which the first are: 
+
+```{r, echo=FALSE , warning=FALSE, message=FALSE}
+head(randomForest::getTree(modFitRF$finalModel, k=1))
+```
+
+
+
+
+```{r, echo=FALSE , warning=FALSE, message=FALSE}
+boostreefirsrun <- FALSE
+
+if(boostreefirsrun == TRUE){
+  modFitboostree <- train(classe  ~ .  , data = train, method="C5.0",
+                          preProcess=c("center","scale")
+                          )
+  save(modFitboostree, file = "modFitboostree.RData")  
+  } else {
+    load( "modFitboostree.RData")  
+  }
+
+
+optrow <- modFitboostree$results[modFitboostree$results$model == modFitboostree$bestTune$model
+& modFitboostree$results$winnow == modFitboostree$bestTune$winnow & modFitboostree$results$trials == modFitboostree$bestTune$trials, ]
+
+optaccu <- optrow[, "Accuracy"]
+```
+
+We have also used a boosted tree with the `r  modFitboostree$method` algoritm. The model has been bootstrapped for the purpose of cross validation with `r modFitboostree$control$number  ` resamples. This leads to a accuracy of `r round(optaccu,3)` for the preferred model. Again, taking into account that this has been obtained after a bootstrapping procedure, this is a unbiased estimate of out-of-sample error. 
+
+```{r, echo=FALSE , warning=FALSE, message=FALSE}
+modFitboostree
+```
+
+```{r, echo=FALSE , warning=FALSE, message=FALSE}
+#modFitboostree$finalModel
+```
+
+
+```{r, echo=FALSE , warning=FALSE, message=FALSE}
+modFitgbmfirstrun <- FALSE
+
+if(boostreefirsrun == TRUE){
+  modFitgbm <- train(classe  ~ .  , data = train, method="gbm",
+                          preProcess=c("center","scale")
+                          )
+  save(modFitgbm, file = "modFitgbm.RData")  
+  } else {
+    load( "modFitgbm.RData")  
+  }
+```
+
+Finally, we have used the "gbm" (boosting with trees) algorithm. 
+
+
+
+```{r, echo=FALSE , warning=FALSE, message=FALSE}
+modFitgbm
+
+optrowgbm <- modFitgbm$results[modFitgbm$results$n.trees == modFitgbm$bestTune$n.trees
+& modFitgbm$results$interaction.depth == modFitgbm$bestTune$interaction.depth & modFitgbm$results$shrinkage == modFitgbm$bestTune$shrinkage, ]
+
+optaccugbm <- optrowgbm[, "Accuracy"]
+```
+
+
+As all previous models, the model has been bootstrapped for the purpose of cross validation with `r optrowgbm$control$number  ` resamples. This leads to a accuracy of `r round(optaccugbm,3)` for the preferred model. Again, taking into account that this has been obtained after a bootstrapping procedure, this is a unbiased estimate of out-of-sample error. 
+
+Thus, the three last models perform very well in the training data set.
+As shown below, the three last models result in identical predictions in the test data set. 
+Therefore, stacking these models will not improve performance. 
+
+
+```{r, warning=FALSE , message=FALSE}
+predRF <- predict(modFitRF,test)
+predboost <- predict(modFitboostree,test)
+all.equal(predRF,predboost)
+predgbm <- predict(modFitgbm,test)
+all.equal(predRF,predboost)
+
+```
+
+
+```{r, echo = FALSE}
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+
+answers <- as.character(predRF)
+
+pml_write_files(answers)
+```
+
+#Reference
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+
+
+
+
+
